@@ -1,0 +1,30 @@
+
+type Product {
+    product_id: ID!
+    name: String!
+    cost: Int!
+    price: Int!
+    inventory: Int
+    warehouse: [Warehouse]
+ }
+
+
+type Warehouse {
+    warehouse_id: ID!
+    name: String!
+    address: String!
+    city: String!
+    state: String!
+    zipcode: String!
+    phoneNumber: String!
+}
+
+ type Query {
+  product(id: ID!): Product(id: ID!) [Product]
+  productByName(name: String!): [Product]
+  productByWarehouse(id: ID!): [Product]
+  warehouse(warehouse_id: ID!): [Warehouse]
+  warehouseByName(name: String!): [Warehouse]
+  allProducts: [Product]
+  allWarehouses: [Warehouse]
+  }

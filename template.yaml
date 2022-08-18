@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  BidScaleCaseStudy
+
+Transform:
+- AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Tracing: Active
+  Api:
+    TracingEnabled: True
+
+Resources:
+  PublicAWSApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: Public AWS Api Gateway
+      StageName: Staging
+
+  GraphqlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/graphql/graphql.handler
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Apollo graphql server.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref InventoryTable
+      Environment:
+        Variables:
+          # Make table name accessible as environment variable from function code during execution
+          INVENTORY_TABLE: !Ref InventoryTable
+      Events:
+        Graphql:
+          Type: Api
+          Properties:
+            Path: /api
+            Method: POST
+            ApiId: !Ref PublicAWSApiGateway
+
+  # Each Lambda function is defined by properties:
+  # https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+
+  # This is a Lambda function config associated with the source code: get-by-id.js
+  UploadFileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/upload/upload.handler
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Upload files to s3.
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref UploadBucket
+      Environment:
+        Variables:
+          # Make table name accessible as environment variable from function code during execution
+          BUCKET: !Ref UploadBucket
+      Events:
+        Upload:
+          Type: Api
+          Properties:
+            Path: /upload
+            Method: POST
+            ApiId: !Ref PublicAWSApiGateway
+            CorsConfiguration:
+              CorsRules:
+                - AllowedHeaders:
+                    - "*"
+                  AllowedMethods:
+                    - GET
+                    - POST
+                    - HEAD
+                  AllowedOrigins:
+                    - "*"
+
+  ExtractFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/extract/extract.handler
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Write items from the uploaded files to DynamoDB table.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref InventoryTable
+        - S3ReadPolicy:
+            BucketName: !Ref UploadBucket
+      Environment:
+        Variables:
+          INVENTORY_TABLE: !Ref InventoryTable
+          BUCKET: !Ref UploadBucket
+      Events:
+        ExtractFunctionEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref UploadBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".csv"
+
+
+  InventoryTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: product_id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+
+  UploadBucket:
+    Type: AWS::S3::Bucket
+
+Outputs:
+  WebEndpoint:
+    Description: "API Gateway endpoint URL for Prod stage"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+  InventoryTableName:
+    Description: "Actual Table Name"
+    Value: !Ref InventoryTable
+
