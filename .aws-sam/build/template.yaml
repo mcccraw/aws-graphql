@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: BidScaleCaseStudy
+Transform: AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Tracing: Active
+  Api:
+    TracingEnabled: true
+    Cors:
+      AllowMethods: '''GET,POST,OPTIONS,HEAD'''
+      AllowHeaders: '''content-type'''
+      AllowOrigin: '''*'''
+Resources:
+  InventoryTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: product_id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+  UploadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: uploads-${AWS::StackName}-${AWS::Region}
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+  ServerlessApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: api
+  GraphqlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/graphql/graphql.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Apollo graphql server.
+      Policies:
+      - AWSLambdaBasicExecutionRole
+      - AWSXrayWriteOnlyAccess
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: InventoryTable
+      Environment:
+        Variables:
+          INVENTORY_TABLE:
+            Ref: InventoryTable
+      Events:
+        Graphql:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: ServerlessApi
+            Path: /graphql
+            Method: POST
+      CodeUri: GraphqlFunction
+    Metadata:
+      SamResourceId: GraphqlFunction
+  UploadFileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/upload/upload.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Upload files to s3.
+      Policies:
+      - AWSLambdaBasicExecutionRole
+      - AWSXrayWriteOnlyAccess
+      - Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Action: s3:PutObject*
+          Resource:
+            Fn::Sub: arn:aws:s3:::uploads-${AWS::StackName}-${AWS::Region}-${AWS::AccountId}*
+      Environment:
+        Variables:
+          BUCKET:
+            Fn::Sub: uploads-${AWS::StackName}-${AWS::Region}
+      Events:
+        Upload:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: ServerlessApi
+            Path: /upload
+            Method: POST
+      CodeUri: UploadFileFunction
+    Metadata:
+      SamResourceId: UploadFileFunction
+  ExtractFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/extract/extract.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Write items from the uploaded files to DynamoDB table.
+      Policies:
+      - AWSLambdaBasicExecutionRole
+      - AWSXrayWriteOnlyAccess
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: InventoryTable
+      - S3ReadPolicy:
+          BucketName:
+            Fn::Sub: uploads-${AWS::StackName}-${AWS::Region}
+      Environment:
+        Variables:
+          BUCKET:
+            Fn::Sub: uploads-${AWS::StackName}-${AWS::Region}
+          INVENTORY_TABLE:
+            Ref: InventoryTable
+      Events:
+        ExtractFunctionEvent:
+          Type: S3
+          Properties:
+            Bucket:
+              Ref: UploadBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                - Name: suffix
+                  Value: .csv
+      CodeUri: ExtractFunction
+    Metadata:
+      SamResourceId: ExtractFunction
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt:
+        - ExtractFunction
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount:
+        Fn::Sub: ${AWS::AccountId}
+      SourceArn:
+        Fn::GetAtt:
+        - UploadBucket
+        - Arn
+Outputs:
+  WebEndpoint:
+    Description: API Gateway endpoint URL for Prod stage
+    Value:
+      Fn::Sub: https://${ServerlessApi}.execute-api.${AWS::Region}.amazonaws.com/api/
+  InventoryTableName:
+    Description: Actual Table Name
+    Value:
+      Ref: InventoryTable
